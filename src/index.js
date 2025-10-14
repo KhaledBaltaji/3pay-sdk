@@ -466,7 +466,7 @@ class ThreePay {
   }
 
   /**
-   * Generate the checkout page HTML with embedded SDK
+   * Generate the checkout page HTML with embedded SDK and socket integration
    * @param {Object} defaultValues - Default values for the form
    * @returns {string} Complete HTML page
    */
@@ -631,6 +631,55 @@ class ThreePay {
             font-size: 14px;
             line-height: 1.6;
         }
+
+
+        .transaction-updates {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .transaction-updates.show {
+            display: block;
+        }
+
+        .update-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #e9ecef;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .update-item:last-child {
+            border-bottom: none;
+        }
+
+        .update-timestamp {
+            color: #6c757d;
+            font-size: 11px;
+        }
+
+        .update-status {
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
+        .update-status.pending {
+            color: #ffc107;
+        }
+
+        .update-status.completed {
+            color: #28a745;
+        }
+
+        .update-status.failed {
+            color: #dc3545;
+        }
     </style>
 </head>
 <body>
@@ -662,10 +711,18 @@ class ThreePay {
         </form>
 
         <div id="result" class="result"></div>
+
+        <!-- Real-time Transaction Updates -->
+        <div id="transactionUpdates" class="transaction-updates">
+            <h3 style="margin-top: 0; color: #667eea; font-size: 16px;">Transaction Updates</h3>
+            <div id="updatesList"></div>
+        </div>
     </div>
 
+    <!-- Load Socket.IO for real-time updates -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script>
-        // Embedded 3PA-Y SDK
+        // Embedded 3PA-Y SDK with Socket Integration
         ${this.getEmbeddedSDKCode()}
     </script>
 </body>
@@ -673,11 +730,70 @@ class ThreePay {
   }
 
   /**
-   * Get the embedded SDK code as a string
+   * Get the embedded SDK code as a string with socket integration
    * @returns {string} SDK code
    */
   getEmbeddedSDKCode() {
     return `
+        // Simple Socket Integration
+        let socket = null;
+        let currentTransactionId = null;
+
+        // Connect to socket server
+        function connectSocket() {
+            if (socket && socket.connected) return;
+            
+            socket = io('${this.baseUrl}');
+            socket.on('connect', () => updateStatus('Connected', 'connected'));
+            socket.on('disconnect', () => updateStatus('Disconnected', 'disconnected'));
+            socket.on('connect_error', () => updateStatus('Connection Error', 'disconnected'));
+        }
+
+        // Update socket status
+        function updateStatus(message, type) {
+            console.log(\`Socket Status: \${message}\`);
+        }
+
+        // Add transaction update to the list
+        function addTransactionUpdate(update) {
+            const updatesList = document.getElementById('updatesList');
+            const transactionUpdates = document.getElementById('transactionUpdates');
+            if (!updatesList || !transactionUpdates) return;
+            
+            // Get status from different possible locations
+            const status = update.status || update.date?.status || update.data?.status || 'unknown';
+            const timestamp = new Date().toLocaleTimeString();
+            
+            // Create update item
+            const updateItem = document.createElement('div');
+            updateItem.className = 'update-item';
+            updateItem.innerHTML = \`
+                <span class="update-timestamp">[\${timestamp}]</span>
+                <span class="update-status \${status.toLowerCase()}">\${status.toUpperCase()}</span>
+                <div style="margin-top: 4px; font-size: 11px; color: #666;">
+                    \${JSON.stringify(update, null, 2)}
+                </div>
+            \`;
+            
+            updatesList.appendChild(updateItem);
+            updatesList.scrollTop = updatesList.scrollHeight;
+            transactionUpdates.classList.add('show');
+        }
+
+        // Listen for real-time updates
+        function listenForTransactionUpdates(transactionId) {
+            if (!socket?.connected) return;
+            
+            // Remove old listener
+            if (currentTransactionId) {
+                socket.off(\`transaction-status-\${currentTransactionId}\`);
+            }
+            
+            // Add new listener
+            currentTransactionId = transactionId;
+            socket.on(\`transaction-status-\${transactionId}\`, addTransactionUpdate);
+        }
+
         class ThreePay {
           constructor(config) {
             this.apiKey = config.apiKey;
@@ -800,6 +916,9 @@ class ThreePay {
             baseUrl: '${this.baseUrl}'
           });
 
+          // Connect to socket
+          connectSocket();
+
           const form = document.getElementById('paymentForm');
           const submitBtn = document.getElementById('submitBtn');
           const resultDiv = document.getElementById('result');
@@ -827,15 +946,10 @@ class ThreePay {
               const response = await threePay.createTransaction(transactionData);
               console.log('Transaction Response:', response);
 
-              resultDiv.className = 'result success';
-              resultDiv.innerHTML = \`
-                <strong>✅ Transaction Created Successfully!</strong>
-                <p><strong>Transaction ID:</strong> \${response.data.transactionId}</p>
-                <p><strong>Amount:</strong> $\${response.data.amount} \${response.data.currencyType}</p>
-                <p><strong>Status:</strong> \${response.data.status}</p>
-                \${response.data.walletAddress ? \`<p><strong>Wallet Address:</strong> <code>\${response.data.walletAddress}</code></p>\` : ''}
-                \${response.data.url ? \`<p><strong>Checkout URL:</strong> <a href="\${response.data.url}" target="_blank">\${response.data.url}</a></p>\` : ''}
-              \`;
+              // Start listening for real-time updates if transaction ID is available
+              if (response && response.transactionId) {
+                listenForTransactionUpdates(response.transactionId);
+              }
 
             } catch (error) {
               resultDiv.className = 'result error';
@@ -850,6 +964,11 @@ class ThreePay {
             }
           });
         }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (socket) socket.disconnect();
+        });
 
         // Initialize when page loads
         if (document.readyState === 'loading') {

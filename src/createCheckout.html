@@ -147,6 +147,75 @@
             font-size: 14px;
             line-height: 1.6;
         }
+
+        .socket-status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .socket-status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+
+        .socket-status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+
+        .transaction-updates {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .transaction-updates.show {
+            display: block;
+        }
+
+        .update-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #e9ecef;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .update-item:last-child {
+            border-bottom: none;
+        }
+
+        .update-timestamp {
+            color: #6c757d;
+            font-size: 11px;
+        }
+
+        .update-status {
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
+        .update-status.pending {
+            color: #ffc107;
+        }
+
+        .update-status.completed {
+            color: #28a745;
+        }
+
+        .update-status.failed {
+            color: #dc3545;
+        }
     </style>
 </head>
 
@@ -179,11 +248,78 @@
         </form>
 
         <div id="result" class="result"></div>
+
+        <!-- Real-time Transaction Updates -->
+        <div id="transactionUpdates" class="transaction-updates">
+            <h3 style="margin-top: 0; color: #667eea; font-size: 16px;">Transaction Updates</h3>
+            <div id="updatesList"></div>
+        </div>
     </div>
 
     <!-- Load the 3PAY SDK -->
     <script src="https://unpkg.com/3pa-y@1.0.1/dist/3pa-y.min.js"></script>
+    <!-- Load Socket.IO for real-time updates -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script>
+        // Simple Socket Integration
+        let socket = null;
+        let currentTransactionId = null;
+
+        // Connect to socket server
+        function connectSocket() {
+            if (socket && socket.connected) return;
+
+            socket = io('http://localhost:5000');
+            socket.on('connect', () => updateStatus('Connected', 'connected'));
+            socket.on('disconnect', () => updateStatus('Disconnected', 'disconnected'));
+            socket.on('connect_error', () => updateStatus('Connection Error', 'disconnected'));
+        }
+
+        // Update socket status
+        function updateStatus(message, type) {
+            console.log(`Socket Status: ${message}`);
+        }
+
+        // Add transaction update to the list
+        function addTransactionUpdate(update) {
+            const updatesList = document.getElementById('updatesList');
+            const transactionUpdates = document.getElementById('transactionUpdates');
+            if (!updatesList || !transactionUpdates) return;
+
+            // Get status from different possible locations
+            const status = update.status || update.date?.status || update.data?.status || 'unknown';
+            const timestamp = new Date().toLocaleTimeString();
+
+            // Create update item
+            const updateItem = document.createElement('div');
+            updateItem.className = 'update-item';
+            updateItem.innerHTML = `
+                <span class="update-timestamp">[${timestamp}]</span>
+                <span class="update-status ${status.toLowerCase()}">${status.toUpperCase()}</span>
+                <div style="margin-top: 4px; font-size: 11px; color: #666;">
+                    ${JSON.stringify(update, null, 2)}
+                </div>
+            `;
+
+            updatesList.appendChild(updateItem);
+            updatesList.scrollTop = updatesList.scrollHeight;
+            transactionUpdates.classList.add('show');
+        }
+
+        // Listen for real-time updates
+        function listenForTransactionUpdates(transactionId) {
+            if (!socket?.connected) return;
+
+            // Remove old listener
+            if (currentTransactionId) {
+                socket.off(`transaction-status-${currentTransactionId}`);
+            }
+
+            // Add new listener
+            currentTransactionId = transactionId;
+            socket.on(`transaction-status-${transactionId}`, addTransactionUpdate);
+        }
+
         // Wait for the SDK to load before initializing
         function initializeSDK() {
             console.log('Checking for ThreePay...', typeof ThreePay);
@@ -202,6 +338,9 @@
                 apiSecret: '4e6b816cfe2d706187019a9349f233ff1fca89341e8d931ff37f18c8af474f04',
                 baseUrl: 'http://localhost:5000'
             });
+
+            // Connect to socket
+            connectSocket();
 
             const form = document.getElementById('paymentForm');
             const submitBtn = document.getElementById('submitBtn');
@@ -237,6 +376,11 @@
                     const response = await threePay.createTransaction(transactionData);
                     console.log('Transaction Response:', response);
 
+                    // Start listening for real-time updates if transaction ID is available
+                    if (response && response.transactionId) {
+                        listenForTransactionUpdates(response.transactionId);
+                    }
+
                 } catch (error) {
                     // Show error result
                     resultDiv.className = 'result error';
@@ -252,6 +396,11 @@
                 }
             });
         }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (socket) socket.disconnect();
+        });
 
         // Start trying to initialize once the page loads
         document.addEventListener('DOMContentLoaded', initializeSDK);
